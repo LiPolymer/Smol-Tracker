@@ -181,9 +181,12 @@ uint16_t lsm_data_read(uint8_t *data, uint16_t len)
 {
 	uint8_t rawCount[2] = {0};
 	int err = ssi_burst_read(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_STATUS1, &rawCount[0], 2);
-	
-	uint16_t count = (uint16_t)((rawCount[1] & 3) << 8 | rawCount[0]); // Turn the 16 bits into a unsigned 16-bit value. Only LSB on FIFO_STATUS2 is used, but we mask 2nd bit too // TODO: might be 3 bits not 2
-	
+
+	uint16_t count = (uint16_t)((rawCount[1] & 3) << 8 | rawCount[0]); // ORIGINAL: masks 2 bits
+	/* DIAG: DIFF_FIFO is 9 bits. FIFO_STATUS2 bit0 = DIFF_FIFO[8], bit1 is RESERVED.
+	 * Masking 2 bits adds a phantom +512 whenever the reserved bit reads as 1. */
+	uint16_t count_fixed = (uint16_t)((rawCount[1] & 1) << 8 | rawCount[0]);
+
 	const uint16_t limit = len / PACKET_SIZE;
 	if (count > limit)
 	{
@@ -194,6 +197,29 @@ uint16_t lsm_data_read(uint8_t *data, uint16_t len)
 	err |= ssi_burst_read_interval(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_DATA_OUT_TAG, data, count * PACKET_SIZE, PACKET_SIZE);
 	if (err)
 		LOG_ERR("Communication error");
+
+	/* ================= DIAG ================= */
+	static uint32_t diag_n = 0;
+	if ((diag_n++ % 64) == 0)
+	{
+		uint8_t who = 0;
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x0F, &who);
+
+		int n = (int)(count * PACKET_SIZE);
+		if (n > 96) n = 96;
+		int nff = 0;
+		for (int i = 0; i < n; i++)
+			if (data[i] == 0xFF) nff++;
+
+		uint8_t t0 = count > 0 ? data[0] : 0;
+		uint8_t t1 = count > 1 ? data[7] : 0;
+		uint8_t t2 = count > 2 ? data[14] : 0;
+
+		LOG_WRN("DIAG ST2=%02X ST1=%02X cnt=%u fixed=%u who=0x%02X tags=%02X,%02X,%02X ff=%d/%d",
+			rawCount[1], rawCount[0], (unsigned)count, (unsigned)count_fixed, who,
+			t0, t1, t2, nff, n);
+	}
+	/* ======================================== */
 
 	return count;
 }
