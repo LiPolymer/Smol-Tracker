@@ -26,8 +26,7 @@ build_ci_image:
   stage: image
   image: docker:27.5.1-cli
   services:
-    - name: docker:27.5.1-dind
-      alias: docker
+    - docker:27.5.1-dind
 
   variables:
     DOCKER_HOST: "tcp://docker:2375"
@@ -51,10 +50,18 @@ build_ci_image:
     - docker push "$TOOLCHAIN_IMAGE"
 
   rules:
-    - changes:
+    # Publish the stable toolchain image automatically only after a Dockerfile
+    # change lands on the default branch. In an MR it remains available as an
+    # optional manual validation job, avoiding a rebuild after every MR push.
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
         - ci/Dockerfile
-    - when: manual
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ci/Dockerfile
+      when: manual
       allow_failure: true
+    - when: never
 
 build_firmware:
   stage: build
@@ -62,12 +69,13 @@ build_firmware:
   timeout: 90m
 
   # Heavy NCS/Zephyr source dependencies are keyed by the west manifest instead
-  # of the current branch. The toolchain itself now lives in the container image.
+  # of the current branch. Keep the previous cache namespace while migrating the
+  # SDK itself into the image so existing warm NCS caches remain reusable.
   cache:
     - key:
         files:
           - west.yml
-        prefix: "smol-ncs-0.16.9"
+        prefix: "smol-ncs-sdk-0.16.9"
       paths:
         - .west-workspace/.west/
         - .west-workspace/zephyr/
