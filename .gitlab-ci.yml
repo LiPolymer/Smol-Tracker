@@ -120,7 +120,7 @@ build_firmware:
         || BUILD_STATUS=$?
 
       echo "--- ccache statistics ---"
-      ccache --show-stats || true
+      ccache --show-stats -vv || true
 
       # Always collect useful diagnostics so failed board builds are inspectable.
       DTS_FILE=$(find app/build -name 'zephyr.dts' -type f | head -n 1 || true)
