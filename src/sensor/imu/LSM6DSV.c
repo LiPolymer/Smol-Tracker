@@ -51,6 +51,32 @@ int lsm_init(float clock_rate, float accel_time, float gyro_time, float *accel_a
 	err |= ssi_reg_write_byte(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_CTRL4, 0x06); // enable Continuous mode
 	if (err)
 		LOG_ERR("Communication error");
+
+	/* ================= DIAG: read back every config register =================
+	 * ssi_reg_write_byte() is write-only on SPI, so err only reports SPI
+	 * peripheral status -- it says NOTHING about whether the chip accepted it.
+	 * Expected values if the writes landed:
+	 *   who=70 CTRL6=gyro_fs CTRL8=accel_fs CTRL3=00
+	 *   CTRL1=OP_MODE_XL_HP<<4|ODR_XL  CTRL2=OP_MODE_G_HP<<4|ODR_G
+	 *   FIFO_CTRL3=ODR_XL|(ODR_G<<4)   FIFO_CTRL4=06   IF_CFG=18
+	 * Anything 00 or FF here means the writes did NOT land.
+	 */
+	{
+		uint8_t who = 0, c1 = 0, c2 = 0, c3 = 0, c6 = 0, c8 = 0, fc3 = 0, fc4 = 0, ifc = 0;
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x0F, &who);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x10, &c1);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x11, &c2);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x12, &c3);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x15, &c6);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x17, &c8);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x09, &fc3);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x0A, &fc4);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x03, &ifc);
+		LOG_WRN("DIAGREG who=%02X CTRL1=%02X CTRL2=%02X CTRL3=%02X CTRL6=%02X CTRL8=%02X FC3=%02X FC4=%02X IFCFG=%02X",
+			who, c1, c2, c3, c6, c8, fc3, fc4, ifc);
+	}
+	/* ======================================================================== */
+
 	return (err < 0 ? err : 0);
 }
 
