@@ -7,19 +7,40 @@ variables:
   ARTIFACT_NAME: "SlimeNRF_DIY_nRF52840_Tracker"
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   WEST_WORKSPACE: "$CI_PROJECT_DIR/.west-workspace"
+  CCACHE_DIR: "$CI_PROJECT_DIR/.cache/ccache"
+  CCACHE_MAXSIZE: "250M"
+  CCACHE_COMPRESS: "true"
+  CACHE_COMPRESSION_FORMAT: "tarzstd"
+  CACHE_COMPRESSION_LEVEL: "fast"
 
+# Keep heavyweight dependencies independent from the current branch. GitLab
+# still separates protected/non-protected caches, but feature branches can now
+# reuse one another's NCS/SDK cache instead of starting from zero every time.
 cache:
-  key: "slimenrf-diy-${CI_COMMIT_REF_SLUG}"
-  paths:
-    - .cache/pip/
-    - .cache/zephyr-sdk-0.16.9/
-    - .west-workspace/.west/
-    - .west-workspace/zephyr/
-    - .west-workspace/nrf/
-    - .west-workspace/modules/
-    - .west-workspace/nrfxlib/
-    - .west-workspace/bootloader/
-    - .west-workspace/tools/
+  - key:
+      files:
+        - west.yml
+      prefix: "smol-ncs-sdk-0.16.9"
+    paths:
+      - .cache/zephyr-sdk-0.16.9/
+      - .west-workspace/.west/
+      - .west-workspace/zephyr/
+      - .west-workspace/nrf/
+      - .west-workspace/modules/
+      - .west-workspace/nrfxlib/
+      - .west-workspace/bootloader/
+      - .west-workspace/tools/
+    policy: pull-push
+
+  - key: "smol-pip-ubuntu24-py312"
+    paths:
+      - .cache/pip/
+    policy: pull-push
+
+  - key: "smol-ccache-zephyr-0.16.9"
+    paths:
+      - .cache/ccache/
+    policy: pull-push
 
 build_firmware:
   stage: build
@@ -38,6 +59,8 @@ build_firmware:
     - .venv/bin/pip install --upgrade pip
     - .venv/bin/pip install west
     - export PATH="$CI_PROJECT_DIR/.venv/bin:$PATH"
+    - ccache --max-size "$CCACHE_MAXSIZE"
+    - ccache --zero-stats
 
   script:
     - |
@@ -82,7 +105,12 @@ build_firmware:
         -- \
         -DNCS_TOOLCHAIN_VERSION=NONE \
         -DBOARD_ROOT="$WEST_WORKSPACE/app" \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         || BUILD_STATUS=$?
+
+      echo "--- ccache statistics ---"
+      ccache --show-stats || true
 
       # Always collect useful diagnostics so failed board builds are inspectable.
       DTS_FILE=$(find app/build -name 'zephyr.dts' -type f | head -n 1 || true)
