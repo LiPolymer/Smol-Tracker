@@ -153,8 +153,15 @@ jobs:
           cd zephyr-workspace/app
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout --orphan firmware-tmp
-          git rm -rf --cached . > /dev/null 2>&1 || true
+          # base on the existing firmware branch so previously built files survive
+          if git fetch origin firmware --depth=1 2>/dev/null; then
+            git checkout -q -B firmware FETCH_HEAD
+          else
+            git checkout -q --orphan firmware
+          fi
+          # keep only Releases/, drop the rest so the branch stays small
+          find . -mindepth 1 -maxdepth 1 ! -name Releases ! -name .git -exec rm -rf {} +
+          git rm -r --cached --ignore-unmatch . > /dev/null 2>&1 || true
           git add -f Releases/
           git commit -q -m "firmware: ${ARTIFACT_NAME} @ ${GITHUB_SHA}" || echo "nothing to commit"
-          git push -f origin HEAD:refs/heads/firmware
+          git push origin HEAD:refs/heads/firmware
