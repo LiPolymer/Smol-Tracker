@@ -1,6 +1,14 @@
 stages:
   - build
 
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
 variables:
   ZEPHYR_SDK_VERSION: "0.16.9"
   BOARD: "nrf52840dk/nrf52840"
@@ -143,8 +151,3 @@ build_firmware:
       - artifacts/*
     expire_in: 30 days
     when: always
-
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH'
-    - if: '$CI_PIPELINE_SOURCE == "web"'
