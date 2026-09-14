@@ -1,0 +1,122 @@
+stages:
+  - build
+
+variables:
+  ZEPHYR_SDK_VERSION: "0.16.9"
+  BOARD: "nrf52840dk/nrf52840"
+  ARTIFACT_NAME: "SlimeNRF_DIY_nRF52840_Tracker"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  WEST_WORKSPACE: "$CI_PROJECT_DIR/.west-workspace"
+
+cache:
+  key: "slimenrf-diy-${CI_COMMIT_REF_SLUG}"
+  paths:
+    - .cache/pip/
+    - .cache/zephyr-sdk-0.16.9/
+    - .west-workspace/.west/
+    - .west-workspace/zephyr/
+    - .west-workspace/nrf/
+    - .west-workspace/modules/
+    - .west-workspace/nrfxlib/
+    - .west-workspace/bootloader/
+    - .west-workspace/tools/
+
+build_firmware:
+  stage: build
+  image: ubuntu:24.04
+  timeout: 90m
+
+  before_script:
+    - apt-get update
+    - >-
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends
+      git cmake ninja-build gperf ccache dfu-util device-tree-compiler wget
+      python3-dev python3-pip python3-setuptools python3-tk python3-wheel python3-venv
+      xz-utils file make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1 ca-certificates
+    - rm -rf /var/lib/apt/lists/*
+    - python3 -m venv .venv
+    - .venv/bin/pip install --upgrade pip
+    - .venv/bin/pip install west
+    - export PATH="$CI_PROJECT_DIR/.venv/bin:$PATH"
+
+  script:
+    - |
+      set -euo pipefail
+
+      ZEPHYR_SDK_DIR="$CI_PROJECT_DIR/.cache/zephyr-sdk-${ZEPHYR_SDK_VERSION}"
+      SDK_ARCHIVE="zephyr-sdk-${ZEPHYR_SDK_VERSION}_linux-x86_64_minimal.tar.xz"
+      SDK_URL="https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v${ZEPHYR_SDK_VERSION}/${SDK_ARCHIVE}"
+
+      if [ ! -x "${ZEPHYR_SDK_DIR}/setup.sh" ]; then
+        echo "Downloading Zephyr SDK ${ZEPHYR_SDK_VERSION}..."
+        rm -rf "${ZEPHYR_SDK_DIR}"
+        mkdir -p "$CI_PROJECT_DIR/.cache"
+        wget -q "${SDK_URL}" -O "/tmp/${SDK_ARCHIVE}"
+        tar xf "/tmp/${SDK_ARCHIVE}" -C "$CI_PROJECT_DIR/.cache"
+      fi
+
+      "${ZEPHYR_SDK_DIR}/setup.sh" -c -t arm-zephyr-eabi
+
+      rm -rf "${WEST_WORKSPACE}/app"
+      mkdir -p "${WEST_WORKSPACE}"
+      git clone --quiet --no-hardlinks "$CI_PROJECT_DIR" "${WEST_WORKSPACE}/app"
+      git -C "${WEST_WORKSPACE}/app" checkout --quiet "$CI_COMMIT_SHA"
+
+      cd "${WEST_WORKSPACE}"
+      if [ ! -d .west ]; then
+        west init -l app
+      fi
+
+      west update --narrow -o=--depth=1
+      west zephyr-export
+      "$CI_PROJECT_DIR/.venv/bin/pip" install -r zephyr/scripts/requirements.txt
+
+      rm -rf app/build "$CI_PROJECT_DIR/artifacts"
+      mkdir -p "$CI_PROJECT_DIR/artifacts"
+
+      BUILD_STATUS=0
+      west build \
+        --board "$BOARD" \
+        --pristine=always app \
+        --build-dir app/build \
+        -- \
+        -DNCS_TOOLCHAIN_VERSION=NONE \
+        -DBOARD_ROOT="$WEST_WORKSPACE/app" \
+        || BUILD_STATUS=$?
+
+      # Always collect useful diagnostics so failed board builds are inspectable.
+      DTS_FILE=$(find app/build -name 'zephyr.dts' -type f | head -n 1 || true)
+      CONFIG_FILE=$(find app/build -name '.config' -path '*/zephyr/*' -type f | head -n 1 || true)
+      DT_HEADER=$(find app/build -name 'devicetree_generated.h' -type f | head -n 1 || true)
+
+      [ -n "$DTS_FILE" ] && cp -v "$DTS_FILE" "$CI_PROJECT_DIR/artifacts/diag-zephyr.dts"
+      [ -n "$CONFIG_FILE" ] && cp -v "$CONFIG_FILE" "$CI_PROJECT_DIR/artifacts/diag-dotconfig.txt"
+      [ -n "$DT_HEADER" ] && cp -v "$DT_HEADER" "$CI_PROJECT_DIR/artifacts/diag-devicetree_generated.h"
+
+      if [ "$BUILD_STATUS" -eq 0 ]; then
+        HEX_FILE=$(find app/build -path '*/zephyr/zephyr.hex' -type f | head -n 1 || true)
+        if [ -z "$HEX_FILE" ]; then
+          echo "Build succeeded, but zephyr.hex was not found." >&2
+          BUILD_STATUS=1
+        else
+          cp -v "$HEX_FILE" "$CI_PROJECT_DIR/artifacts/${ARTIFACT_NAME}.hex"
+          sha256sum "$CI_PROJECT_DIR/artifacts/${ARTIFACT_NAME}.hex" | tee "$CI_PROJECT_DIR/artifacts/${ARTIFACT_NAME}.hex.sha256"
+        fi
+      fi
+
+      echo "--- Collected artifacts ---"
+      ls -la "$CI_PROJECT_DIR/artifacts" || true
+
+      exit "$BUILD_STATUS"
+
+  artifacts:
+    name: "${ARTIFACT_NAME}-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - artifacts/*
+    expire_in: 30 days
+    when: always
+
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
