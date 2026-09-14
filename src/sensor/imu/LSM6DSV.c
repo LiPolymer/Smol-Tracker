@@ -43,11 +43,21 @@ int lsm_init(float clock_rate, float accel_time, float gyro_time, float *accel_a
 		LOG_ERR("Communication error");
 	last_accel_odr = 0xff; // reset last odr
 	last_gyro_odr = 0xff; // reset last odr
+
+	// Be explicit about the serial-interface state instead of relying on reset defaults.
+	// BDU keeps multi-byte samples coherent and IF_INC is required for all burst reads,
+	// including FIFO_STATUS1/2. If IF_INC is lost, reading the two status bytes can
+	// duplicate FIFO_STATUS1 and make the FIFO count look like 1023 packets.
+	err |= ssi_reg_write_byte(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_CTRL3, 0x44); // BDU | IF_INC
 	err |= ssi_reg_write_byte(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_IF_CFG, 0x18); // INT H_LACTIVE active low, PP_OD open-drain
 	int8_t internal_freq_fine;
 	err |= ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_INTERNAL_FREQ_FINE, &internal_freq_fine); // affects ODR
 	freq_scale = 1.0f + 0.0013f * (float)internal_freq_fine;
 	err |= lsm_update_odr(accel_time, gyro_time, accel_actual_time, gyro_actual_time);
+
+	// Always start from an empty FIFO. This also makes re-initialisation deterministic
+	// after a sensor reset or a transient communication failure.
+	err |= ssi_reg_write_byte(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_CTRL4, 0x00); // bypass mode, clear FIFO
 	err |= ssi_reg_write_byte(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_CTRL4, 0x06); // enable Continuous mode
 	if (err)
 		LOG_ERR("Communication error");
@@ -181,9 +191,37 @@ uint16_t lsm_data_read(uint8_t *data, uint16_t len)
 {
 	uint8_t rawCount[2] = {0};
 	int err = ssi_burst_read(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_STATUS1, &rawCount[0], 2);
-	
-	uint16_t count = (uint16_t)((rawCount[1] & 3) << 8 | rawCount[0]); // Turn the 16 bits into a unsigned 16-bit value. Only LSB on FIFO_STATUS2 is used, but we mask 2nd bit too // TODO: might be 3 bits not 2
-	
+	if (err)
+	{
+		LOG_ERR("Failed to read FIFO status: %d", err);
+		return 0;
+	}
+
+	/*
+	 * LSM6DSV exposes DIFF_FIFO as a 9-bit value: STATUS1 contains [7:0]
+	 * and STATUS2 bit 0 contains bit 8. STATUS2 bits 1 and 2 are reserved.
+	 * The old 0x03 mask treated reserved bit 1 as a FIFO-count bit, allowing an
+	 * impossible 1023-packet count (and the characteristic "877 packets dropped"
+	 * warning with a 1024-byte buffer).
+	 */
+	if (rawCount[1] & 0x06)
+	{
+		static uint32_t invalid_status_count;
+		if ((invalid_status_count++ & 0x3F) == 0)
+			LOG_WRN("Invalid FIFO status 0x%02X 0x%02X, restoring BDU/IF_INC", rawCount[0], rawCount[1]);
+
+		// A duplicated STATUS1 byte is a strong sign that IF_INC was not active.
+		// Restore the interface state and retry the status read once.
+		err = ssi_reg_write_byte(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_CTRL3, 0x44); // BDU | IF_INC
+		err |= ssi_burst_read(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_STATUS1, &rawCount[0], 2);
+		if (err || (rawCount[1] & 0x06))
+			return 0;
+	}
+
+	uint16_t count = (uint16_t)(((rawCount[1] & 0x01) << 8) | rawCount[0]);
+	if (count == 0)
+		return 0;
+
 	const uint16_t limit = len / PACKET_SIZE;
 	if (count > limit)
 	{
@@ -191,9 +229,12 @@ uint16_t lsm_data_read(uint8_t *data, uint16_t len)
 		count = limit;
 	}
 
-	err |= ssi_burst_read_interval(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_DATA_OUT_TAG, data, count * PACKET_SIZE, PACKET_SIZE);
+	err = ssi_burst_read_interval(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_DATA_OUT_TAG, data, count * PACKET_SIZE, PACKET_SIZE);
 	if (err)
-		LOG_ERR("Communication error");
+	{
+		LOG_ERR("Failed to read FIFO data: %d", err);
+		return 0;
+	}
 
 	return count;
 }
