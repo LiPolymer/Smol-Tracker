@@ -4,6 +4,8 @@ stages:
 workflow:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      variables:
+        NCS_CACHE_POLICY: "pull"
     - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
       when: never
     - if: '$CI_COMMIT_BRANCH'
@@ -15,15 +17,17 @@ variables:
   ARTIFACT_NAME: "SlimeNRF_DIY_nRF52840_Tracker"
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   WEST_WORKSPACE: "$CI_PROJECT_DIR/.west-workspace"
+  NCS_CACHE_POLICY: "pull-push"
   CCACHE_DIR: "$CI_PROJECT_DIR/.cache/ccache"
   CCACHE_MAXSIZE: "250M"
   CCACHE_COMPRESS: "true"
+  CCACHE_SLOPPINESS: "include_file_ctime,include_file_mtime"
   CACHE_COMPRESSION_FORMAT: "tarzstd"
   CACHE_COMPRESSION_LEVEL: "fast"
 
-# Keep heavyweight dependencies independent from the current branch. GitLab
-# still separates protected/non-protected caches, but feature branches can now
-# reuse one another's NCS/SDK cache instead of starting from zero every time.
+# Heavy SDK/workspace data is shared by manifest content instead of branch name.
+# MR pipelines only read this cache; branch/default-branch pipelines refresh it,
+# avoiding a costly re-pack/upload of ~160k files after every MR build.
 cache:
   - key:
       files:
@@ -38,7 +42,7 @@ cache:
       - .west-workspace/nrfxlib/
       - .west-workspace/bootloader/
       - .west-workspace/tools/
-    policy: pull-push
+    policy: $NCS_CACHE_POLICY
 
   - key: "smol-pip-ubuntu24-py312"
     paths:
@@ -113,8 +117,6 @@ build_firmware:
         -- \
         -DNCS_TOOLCHAIN_VERSION=NONE \
         -DBOARD_ROOT="$WEST_WORKSPACE/app" \
-        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         || BUILD_STATUS=$?
 
       echo "--- ccache statistics ---"
