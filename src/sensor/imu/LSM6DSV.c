@@ -33,6 +33,62 @@ static float freq_scale = 1; // ODR is scaled by INTERNAL_FREQ_FINE
 
 LOG_MODULE_REGISTER(LSM6DSV, LOG_LEVEL_DBG);
 
+static int lsm_fifo_recover(void)
+{
+	uint8_t whoami = 0;
+	int err = 0;
+
+	LOG_WRN("Recovering LSM6DSV FIFO");
+
+	// Restore SPI interface configuration
+	err |= ssi_reg_write_byte(
+		SENSOR_INTERFACE_DEV_IMU,
+		LSM6DSV_CTRL3,
+		0x44
+	);
+
+	// Verify communication
+	err |= ssi_reg_read_byte(
+		SENSOR_INTERFACE_DEV_IMU,
+		LSM6DSV_WHO_AM_I,
+		&whoami
+	);
+
+	if (err || whoami != 0x70)
+	{
+		LOG_ERR(
+			"LSM6DSV communication failed, WHO_AM_I=0x%02X",
+			whoami
+		);
+		return -EIO;
+	}
+
+	// Clear FIFO
+	err |= ssi_reg_write_byte(
+		SENSOR_INTERFACE_DEV_IMU,
+		LSM6DSV_FIFO_CTRL4,
+		0x00
+	);
+
+	k_usleep(100);
+
+	// Restore continuous FIFO mode
+	err |= ssi_reg_write_byte(
+		SENSOR_INTERFACE_DEV_IMU,
+		LSM6DSV_FIFO_CTRL4,
+		0x06
+	);
+
+	// Restore FIFO batching
+	err |= ssi_reg_write_byte(
+		SENSOR_INTERFACE_DEV_IMU,
+		LSM6DSV_FIFO_CTRL3,
+		last_accel_odr | (last_gyro_odr << 4)
+	);
+
+	return err;
+}
+
 int lsm_init(float clock_rate, float accel_time, float gyro_time, float *accel_actual_time, float *gyro_actual_time)
 {
 	// setup interface for SPI
@@ -191,6 +247,17 @@ uint16_t lsm_data_read(uint8_t *data, uint16_t len)
 {
 	uint8_t rawCount[2] = {0};
 	int err = ssi_burst_read(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_STATUS1, &rawCount[0], 2);
+	if (rawCount[0] == 0xff &&
+	    rawCount[1] == 0xff)
+	{
+		LOG_WRN(
+			"LSM6DSV invalid FIFO status, starting recovery"
+		);
+
+		lsm_fifo_recover();
+
+		return 0;
+	}
 	if (err)
 	{
 		LOG_ERR("Failed to read FIFO status: %d", err);
