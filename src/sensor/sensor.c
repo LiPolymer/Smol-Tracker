@@ -657,6 +657,35 @@ static void sensor_update_sensor_state(void)
 	}
 }
 
+/* ==================== DIAG: WHO_AM_I hammer ====================
+ * Reads WHO_AM_I 200 times in a row and reports the distribution.
+ *   200x 0x70  -> bus is healthy
+ *   mix        -> INTERMITTENT (marginal power / signal integrity)
+ *   200x 0xFF  -> chip is not driving MISO at all (dead / unpowered / unselected)
+ */
+static void diag_who_hammer(const char *tag)
+{
+	int n70 = 0, nff = 0, nother = 0;
+	uint8_t first = 0, last = 0, other = 0;
+	for (int i = 0; i < 200; i++)
+	{
+		uint8_t w = 0;
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x0F, &w);
+		if (i == 0)
+			first = w;
+		last = w;
+		if (w == 0x70)
+			n70++;
+		else if (w == 0xFF)
+			nff++;
+		else
+			nother++, other = w;
+	}
+	LOG_WRN("DIAGHAMMER %s: 200 reads -> 0x70:%d 0xFF:%d other:%d (first=0x%02X last=0x%02X other=0x%02X)",
+		tag, n70, nff, nother, first, last, other);
+}
+/* ============================================================= */
+
 int sensor_init(void)
 {
 	int err;
@@ -669,6 +698,7 @@ int sensor_init(void)
 		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x0F, &w);
 		LOG_WRN("DIAGWHO 1)after-scan/before-shutdown who=0x%02X", w);
 	}
+	diag_who_hammer("1)after-scan/before-shutdown");
 	if (mag_available) // shutdown magnetometer first (in case of passthrough)
 		sensor_mag->shutdown();
 	sensor_imu->shutdown();
@@ -679,6 +709,7 @@ int sensor_init(void)
 		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x0F, &w);
 		LOG_WRN("DIAGWHO 2)after-sw-reset             who=0x%02X", w);
 	}
+	diag_who_hammer("2)after-sw-reset");
 
 	float clock_actual_rate = 0;
 	if (CONFIG_1_SETTINGS_READ(CONFIG_1_USE_SENSOR_CLOCK))
