@@ -18,10 +18,6 @@ variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   WEST_WORKSPACE: "$CI_PROJECT_DIR/.west-workspace"
   NCS_CACHE_POLICY: "pull-push"
-  CCACHE_DIR: "$CI_PROJECT_DIR/.cache/ccache"
-  CCACHE_MAXSIZE: "250M"
-  CCACHE_COMPRESS: "true"
-  CCACHE_SLOPPINESS: "include_file_ctime,include_file_mtime"
   CACHE_COMPRESSION_FORMAT: "tarzstd"
   CACHE_COMPRESSION_LEVEL: "fast"
 
@@ -49,11 +45,6 @@ cache:
       - .cache/pip/
     policy: pull-push
 
-  - key: "smol-ccache-zephyr-0.16.9"
-    paths:
-      - .cache/ccache/
-    policy: pull-push
-
 build_firmware:
   stage: build
   image: ubuntu:24.04
@@ -63,7 +54,7 @@ build_firmware:
     - apt-get update
     - >-
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends
-      git cmake ninja-build gperf ccache dfu-util device-tree-compiler wget
+      git cmake ninja-build gperf dfu-util device-tree-compiler wget
       python3-dev python3-pip python3-setuptools python3-tk python3-wheel python3-venv
       xz-utils file make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1 ca-certificates
     - rm -rf /var/lib/apt/lists/*
@@ -71,8 +62,6 @@ build_firmware:
     - .venv/bin/pip install --upgrade pip
     - .venv/bin/pip install west
     - export PATH="$CI_PROJECT_DIR/.venv/bin:$PATH"
-    - ccache --max-size "$CCACHE_MAXSIZE"
-    - ccache --zero-stats
 
   script:
     - |
@@ -118,9 +107,6 @@ build_firmware:
         -DNCS_TOOLCHAIN_VERSION=NONE \
         -DBOARD_ROOT="$WEST_WORKSPACE/app" \
         || BUILD_STATUS=$?
-
-      echo "--- ccache statistics ---"
-      ccache --show-stats -vv || true
 
       # Always collect useful diagnostics so failed board builds are inspectable.
       DTS_FILE=$(find app/build -name 'zephyr.dts' -type f | head -n 1 || true)
