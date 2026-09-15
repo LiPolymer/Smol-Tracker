@@ -1068,9 +1068,12 @@ void sensor_loop(void)
 				packet_errors = 0;
 			}
 
-			// Also check if expected number of timesteps when using FIFO threshold, if FIFO threshold is being used
-			if (last_sensor_fifo_threshold && processed_timesteps && processed_timesteps != last_sensor_fifo_threshold)
-				LOG_WRN("Expected %d timestep%s, got %d", last_sensor_fifo_threshold, last_sensor_fifo_threshold == 1 ? "" : "s", processed_timesteps);
+			// The FIFO threshold is a wake-up threshold, not an exact packet count.
+			// More samples may arrive between the interrupt and the FIFO read; only an
+			// under-run is unexpected. Treating normal catch-up reads as warnings can
+			// flood the logger and starve the sensor loop.
+			if (last_sensor_fifo_threshold && processed_timesteps && processed_timesteps < last_sensor_fifo_threshold)
+				LOG_WRN("Expected at least %d timestep%s, got %d", last_sensor_fifo_threshold, last_sensor_fifo_threshold == 1 ? "" : "s", processed_timesteps);
 
 			// Update fusion gyro sanity? // TODO: use to detect drift and correct or suspend tracking
 //			sensor_fusion->update_gyro_sanity(g, m);
