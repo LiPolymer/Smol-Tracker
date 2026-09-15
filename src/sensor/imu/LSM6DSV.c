@@ -51,6 +51,32 @@ int lsm_init(float clock_rate, float accel_time, float gyro_time, float *accel_a
 	err |= ssi_reg_write_byte(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_CTRL4, 0x06); // enable Continuous mode
 	if (err)
 		LOG_ERR("Communication error");
+
+	/* ================= DIAG: read back every config register =================
+	 * ssi_reg_write_byte() is write-only on SPI, so err only reports SPI
+	 * peripheral status -- it says NOTHING about whether the chip accepted it.
+	 * Expected values if the writes landed:
+	 *   who=70 CTRL6=gyro_fs CTRL8=accel_fs CTRL3=00
+	 *   CTRL1=OP_MODE_XL_HP<<4|ODR_XL  CTRL2=OP_MODE_G_HP<<4|ODR_G
+	 *   FIFO_CTRL3=ODR_XL|(ODR_G<<4)   FIFO_CTRL4=06   IF_CFG=18
+	 * Anything 00 or FF here means the writes did NOT land.
+	 */
+	{
+		uint8_t who = 0, c1 = 0, c2 = 0, c3 = 0, c6 = 0, c8 = 0, fc3 = 0, fc4 = 0, ifc = 0;
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x0F, &who);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x10, &c1);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x11, &c2);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x12, &c3);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x15, &c6);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x17, &c8);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x09, &fc3);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x0A, &fc4);
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x03, &ifc);
+		LOG_WRN("DIAGREG who=%02X CTRL1=%02X CTRL2=%02X CTRL3=%02X CTRL6=%02X CTRL8=%02X FC3=%02X FC4=%02X IFCFG=%02X",
+			who, c1, c2, c3, c6, c8, fc3, fc4, ifc);
+	}
+	/* ======================================================================== */
+
 	return (err < 0 ? err : 0);
 }
 
@@ -181,9 +207,12 @@ uint16_t lsm_data_read(uint8_t *data, uint16_t len)
 {
 	uint8_t rawCount[2] = {0};
 	int err = ssi_burst_read(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_STATUS1, &rawCount[0], 2);
-	
-	uint16_t count = (uint16_t)((rawCount[1] & 3) << 8 | rawCount[0]); // Turn the 16 bits into a unsigned 16-bit value. Only LSB on FIFO_STATUS2 is used, but we mask 2nd bit too // TODO: might be 3 bits not 2
-	
+
+	uint16_t count = (uint16_t)((rawCount[1] & 3) << 8 | rawCount[0]); // ORIGINAL: masks 2 bits
+	/* DIAG: DIFF_FIFO is 9 bits. FIFO_STATUS2 bit0 = DIFF_FIFO[8], bit1 is RESERVED.
+	 * Masking 2 bits adds a phantom +512 whenever the reserved bit reads as 1. */
+	uint16_t count_fixed = (uint16_t)((rawCount[1] & 1) << 8 | rawCount[0]);
+
 	const uint16_t limit = len / PACKET_SIZE;
 	if (count > limit)
 	{
@@ -194,6 +223,29 @@ uint16_t lsm_data_read(uint8_t *data, uint16_t len)
 	err |= ssi_burst_read_interval(SENSOR_INTERFACE_DEV_IMU, LSM6DSV_FIFO_DATA_OUT_TAG, data, count * PACKET_SIZE, PACKET_SIZE);
 	if (err)
 		LOG_ERR("Communication error");
+
+	/* ================= DIAG ================= */
+	static uint32_t diag_n = 0;
+	if ((diag_n++ % 64) == 0)
+	{
+		uint8_t who = 0;
+		ssi_reg_read_byte(SENSOR_INTERFACE_DEV_IMU, 0x0F, &who);
+
+		int n = (int)(count * PACKET_SIZE);
+		if (n > 96) n = 96;
+		int nff = 0;
+		for (int i = 0; i < n; i++)
+			if (data[i] == 0xFF) nff++;
+
+		uint8_t t0 = count > 0 ? data[0] : 0;
+		uint8_t t1 = count > 1 ? data[7] : 0;
+		uint8_t t2 = count > 2 ? data[14] : 0;
+
+		LOG_WRN("DIAG ST2=%02X ST1=%02X cnt=%u fixed=%u who=0x%02X tags=%02X,%02X,%02X ff=%d/%d",
+			rawCount[1], rawCount[0], (unsigned)count, (unsigned)count_fixed, who,
+			t0, t1, t2, nff, n);
+	}
+	/* ======================================== */
 
 	return count;
 }
